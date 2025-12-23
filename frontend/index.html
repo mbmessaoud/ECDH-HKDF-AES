@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Secure Login</title>
+</head>
+<body>
+
+<h2>Login</h2>
+
+<input id="username" placeholder="Username" />
+<br><br>
+<input id="password" type="password" placeholder="Password" />
+<br><br>
+<button onclick="login()">Login</button>
+
+<pre id="result"></pre>
+
+<script>
+async function login() {
+  const username = document.getElementById("username").value;
+  const password = document.getElementById("password").value;
+
+  // 1️⃣ Get public key from backend
+  const paramsRes = await fetch("http://localhost:18080/login-params");
+  const params = await paramsRes.json();
+console.log("params :", params);
+  const publicKeyPem = params.public_key;
+  const keyId = params.key_id;
+
+  // 2️⃣ Import public key
+  const publicKey = await importPublicKey(publicKeyPem);
+
+  // 3️⃣ Encrypt password
+  const encryptedPassword = await encryptPassword(publicKey, password);
+
+    console.log("Encrypted Password:", encryptedPassword);
+  // 4️⃣ Send login request
+  const loginRes = await fetch("http://localhost:18080/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username: username,
+      password: encryptedPassword,
+      key_id: keyId
+    })
+  });
+
+   console.log("loginRes: ", loginRes);
+  const result = await loginRes.text();
+  document.getElementById("result").textContent = result;
+}
+
+// ------------------------
+// Crypto helpers
+// ------------------------
+
+function pemToArrayBuffer(pem) {
+  const b64 = pem
+    .replace("-----BEGIN PUBLIC KEY-----", "")
+    .replace("-----END PUBLIC KEY-----", "")
+    .replace(/\s/g, "");
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+async function importPublicKey(pem) {
+  const keyBuffer = pemToArrayBuffer(pem);
+  return crypto.subtle.importKey(
+    "spki",
+    keyBuffer,
+    {
+      name: "RSA-OAEP",
+      hash: "SHA-256"
+    },
+    false,
+    ["encrypt"]
+  );
+}
+
+async function encryptPassword(publicKey, password) {
+  const encoded = new TextEncoder().encode(password);
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "RSA-OAEP" },
+    publicKey,
+    encoded
+  );
+  return btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+}
+</script>
+
+</body>
+</html>
