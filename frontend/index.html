@@ -2,95 +2,361 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Secure Login</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ECDH Secure Login</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h2 {
+      margin-bottom: 24px;
+      color: #333;
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    input {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+      transition: border-color 0.2s;
+    }
+    input:focus {
+      outline: none;
+      border-color: #4CAF50;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+    button:hover:not(:disabled) {
+      background: #45a049;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    #result {
+      margin-top: 20px;
+      padding: 16px;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: 'Courier New', monospace;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      display: none;
+    }
+    #result.show {
+      display: block;
+    }
+    #result.loading {
+      background: #e3f2fd;
+      color: #1976d2;
+      border: 1px solid #90caf9;
+    }
+    #result.success {
+      background: #e8f5e9;
+      color: #2e7d32;
+      border: 1px solid #81c784;
+    }
+    #result.error {
+      background: #ffebee;
+      color: #c62828;
+      border: 1px solid #ef9a9a;
+    }
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid #f3f3f3;
+      border-top: 2px solid #1976d2;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  </style>
 </head>
 <body>
 
-<h2>Login</h2>
-
-<input id="username" placeholder="Username" />
-<br><br>
-<input id="password" type="password" placeholder="Password" />
-<br><br>
-<button onclick="login()">Login</button>
-
-<pre id="result"></pre>
+<div class="container">
+  <h2>🔐 Secure Login (ECDH P-256)</h2>
+  
+  <div class="form-group">
+    <input id="username" type="text" placeholder="Username" autocomplete="username" />
+  </div>
+  
+  <div class="form-group">
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password" />
+  </div>
+  
+  <button id="loginBtn" onclick="login()">Login</button>
+  
+  <div id="result"></div>
+</div>
 
 <script>
-async function login() {
-  const username = document.getElementById("username").value;
-  const password = document.getElementById("password").value;
+'use strict';
 
-  // 1️⃣ Get public key from backend
-  const paramsRes = await fetch("http://localhost:18080/login-params");
-  const params = await paramsRes.json();
-console.log("params :", params);
-  const publicKeyPem = params.public_key;
-  const keyId = params.key_id;
+// ==================== UTILITIES ====================
+const Crypto = {
+  // Convert PEM to ArrayBuffer
+  pemToArrayBuffer(pem) {
+    const b64 = pem.replace(/-----[^-]+-----|\s/g, '');
+    const binary = atob(b64);
+    return Uint8Array.from(binary, c => c.charCodeAt(0)).buffer;
+  },
 
-  // 2️⃣ Import public key
-  const publicKey = await importPublicKey(publicKeyPem);
+  // Convert bytes to base64
+  bytesToB64(bytes) {
+    return btoa(String.fromCharCode(...new Uint8Array(bytes)));
+  },
 
-  // 3️⃣ Encrypt password
-  const encryptedPassword = await encryptPassword(publicKey, password);
+  // Convert base64 to bytes
+  b64ToBytes(b64) {
+    const binary = atob(b64);
+    return Uint8Array.from(binary, c => c.charCodeAt(0));
+  },
 
-    console.log("Encrypted Password:", encryptedPassword);
-  // 4️⃣ Send login request
-  const loginRes = await fetch("http://localhost:18080/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      username: username,
-      password: encryptedPassword,
-      key_id: keyId
-    })
-  });
+  // Decrypt AES-GCM
+  async decrypt(key, {iv, cipher, tag}) {
+    const data = new Uint8Array(cipher.length + tag.length);
+    data.set(cipher);
+    data.set(tag, cipher.length);
 
-   console.log("loginRes: ", loginRes);
-  const result = await loginRes.text();
-  document.getElementById("result").textContent = result;
-}
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv },
+      key,
+      data
+    );
 
-// ------------------------
-// Crypto helpers
-// ------------------------
-
-function pemToArrayBuffer(pem) {
-  const b64 = pem
-    .replace("-----BEGIN PUBLIC KEY-----", "")
-    .replace("-----END PUBLIC KEY-----", "")
-    .replace(/\s/g, "");
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder().decode(decrypted);
   }
-  return bytes.buffer;
-}
+};
 
-async function importPublicKey(pem) {
-  const keyBuffer = pemToArrayBuffer(pem);
-  return crypto.subtle.importKey(
-    "spki",
-    keyBuffer,
-    {
-      name: "RSA-OAEP",
-      hash: "SHA-256"
-    },
+// ==================== UI HELPERS ====================
+const UI = {
+  button: document.getElementById('loginBtn'),
+  result: document.getElementById('result'),
+
+  setLoading(isLoading, message = '') {
+    this.button.disabled = isLoading;
+    this.button.textContent = isLoading ? message : 'Login';
+    
+    if (isLoading && message) {
+      this.showResult(message, 'loading');
+    }
+  },
+
+  showResult(text, type = 'success') {
+    this.result.textContent = text;
+    this.result.className = `show ${type}`;
+  },
+
+  hideResult() {
+    this.result.className = '';
+  }
+};
+
+// ==================== ECDH LOGIN ====================
+async function deriveSharedKey(serverPubKey, username) {
+  // Generate client key pair
+  const clientKeyPair = await crypto.subtle.generateKey(
+    { name: 'ECDH', namedCurve: 'P-256' },
+    true,
+    ['deriveBits']
+  );
+
+  // Derive shared secret
+  const sharedBits = await crypto.subtle.deriveBits(
+    { name: 'ECDH', public: serverPubKey },
+    clientKeyPair.privateKey,
+    256
+  );
+
+  // HKDF to derive AES key (username-bound)
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    sharedBits,
+    'HKDF',
     false,
-    ["encrypt"]
+    ['deriveKey']
   );
+
+  const aesKey = await crypto.subtle.deriveKey(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: new Uint8Array(0),
+      info: new TextEncoder().encode(`login:${username}`)
+    },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+
+  return { aesKey, clientKeyPair };
 }
 
-async function encryptPassword(publicKey, password) {
-  const encoded = new TextEncoder().encode(password);
+async function encryptPassword(aesKey, password) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plaintext = new TextEncoder().encode(password);
+
   const encrypted = await crypto.subtle.encrypt(
-    { name: "RSA-OAEP" },
-    publicKey,
-    encoded
+    { name: 'AES-GCM', iv },
+    aesKey,
+    plaintext
   );
-  return btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+
+  const encryptedBytes = new Uint8Array(encrypted);
+  
+  return {
+    iv: Crypto.bytesToB64(iv),
+    cipher: Crypto.bytesToB64(encryptedBytes.slice(0, -16)),
+    tag: Crypto.bytesToB64(encryptedBytes.slice(-16))
+  };
 }
+
+async function login() {
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+
+  // Validation
+  if (!username || !password) {
+    UI.showResult('❌ Username and password are required', 'error');
+    return;
+  }
+
+  try {
+    // Step 1: Fetch server public key
+    UI.setLoading(true, '⏳ Connecting to server...');
+    
+    const paramsRes = await fetch('http://localhost:18080/login-params');
+    if (!paramsRes.ok) throw new Error('Failed to fetch server parameters');
+    
+    const { server_pub } = await paramsRes.json();
+
+    // Step 2: Import server public key
+    const serverPublicKey = await crypto.subtle.importKey(
+      'spki',
+      Crypto.pemToArrayBuffer(server_pub),
+      { name: 'ECDH', namedCurve: 'P-256' },
+      false,
+      []
+    );
+
+    // Step 3: Derive shared key
+    UI.setLoading(true, '⏳ Deriving shared key...');
+    const { aesKey, clientKeyPair } = await deriveSharedKey(serverPublicKey, username);
+
+    // Step 4: Encrypt password
+    const encryptedData = await encryptPassword(aesKey, password);
+
+    // Step 5: Export client public key
+    const clientPubRaw = await crypto.subtle.exportKey('raw', clientKeyPair.publicKey);
+
+    // Step 6: Send login request
+    UI.setLoading(true, '⏳ Authenticating...');
+    
+    const loginRes = await fetch('http://localhost:18080/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username,
+        client_pub: Crypto.bytesToB64(clientPubRaw),
+        ...encryptedData
+      })
+    });
+
+    if (!loginRes.ok) {
+      throw new Error(`Server error: ${loginRes.status}`);
+    }
+
+    const result = await loginRes.json();
+
+    // Step 7: Decrypt server response
+    UI.setLoading(true, '⏳ Decrypting response...');
+    
+    let output = '✅ Login Successful!\n\n';
+    output += '═'.repeat(50) + '\n';
+    output += 'DECRYPTED DATA:\n';
+    output += '═'.repeat(50) + '\n\n';
+
+    try {
+      // Decrypt hello message
+      if (result.encrypted_hello) {
+        const hello = await Crypto.decrypt(aesKey, {
+          iv: Crypto.b64ToBytes(result.encrypted_hello.iv),
+          cipher: Crypto.b64ToBytes(result.encrypted_hello.cipher),
+          tag: Crypto.b64ToBytes(result.encrypted_hello.tag)
+        });
+        output += `📨 Server message: "${hello}"\n`;
+      }
+
+      // Decrypt password echo
+      if (result.encrypted_password) {
+        const pwd = await Crypto.decrypt(aesKey, {
+          iv: Crypto.b64ToBytes(result.encrypted_password.iv),
+          cipher: Crypto.b64ToBytes(result.encrypted_password.cipher),
+          tag: Crypto.b64ToBytes(result.encrypted_password.tag)
+        });
+        output += `🔑 Password echo: "${pwd}"\n`;
+      }
+
+      output += '\n' + '═'.repeat(50) + '\n';
+      output += '✓ DECRYPTION SUCCESSFUL\n';
+      output += '═'.repeat(50);
+
+      UI.showResult(output, 'success');
+
+    } catch (decryptErr) {
+      output += '\n❌ DECRYPTION FAILED\n\n';
+      output += `Error: ${decryptErr.message}\n\n`;
+      output += 'Troubleshooting:\n';
+      output += '• Server must encrypt with shared ECDH key\n';
+      output += '• Use encrypt(aeskey, ...) not encrypt(master_key, ...)\n';
+      output += '• Verify data integrity\n\n';
+      output += 'Raw response:\n' + JSON.stringify(result, null, 2);
+      
+      UI.showResult(output, 'error');
+    }
+
+  } catch (err) {
+    console.error('Login error:', err);
+    UI.showResult(`❌ Error: ${err.message}`, 'error');
+  } finally {
+    UI.setLoading(false);
+  }
+}
+
+// Handle Enter key
+document.getElementById('password').addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') login();
+});
 </script>
 
 </body>
